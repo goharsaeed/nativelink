@@ -342,7 +342,7 @@ impl GrpcStore {
 
                 drop(local_state_locked);
                 Some((result, local_state))
-            }))
+            }))     
             .await?;
         Ok(result)
     }
