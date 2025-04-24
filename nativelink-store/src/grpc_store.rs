@@ -94,6 +94,7 @@ impl GrpcStore {
             spec.endpoints.is_empty(),
             "Expected at least 1 endpoint in GrpcStore"
         );
+
         let mut endpoints = Vec::with_capacity(spec.endpoints.len());
         for endpoint_config in &spec.endpoints {
             let endpoint = tls_utils::endpoint(endpoint_config)
@@ -253,7 +254,7 @@ impl GrpcStore {
     async fn read_internal(
         &self,
         request: ReadRequest,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<>, Error> {
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Unpin + Send, Error> {
         let channel = self
             .connection_manager
             .connection()
@@ -274,7 +275,7 @@ impl GrpcStore {
     pub async fn read<R>(
         &self,
         grpc_request: R,
-    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + use<R>, Error>
+    ) -> Result<impl Stream<Item = Result<ReadResponse, Status>> + Unpin + Send, Error>
     where
         R: IntoRequest<ReadRequest>,
     {
@@ -311,11 +312,6 @@ impl GrpcStore {
         let result = self
             .retrier
             .retry(unfold(local_state, move |local_state| async move {
-                // The client write may occur on a separate thread and
-                // therefore in order to share the state with it we have to
-                // wrap it in a Mutex and retrieve it after the write
-                // has completed.  There is no way to get the value back
-                // from the client.
                 let result = self
                     .connection_manager
                     .connection()
@@ -327,15 +323,10 @@ impl GrpcStore {
                     })
                     .await;
 
-                // Get the state back from StateWrapper, this should be
-                // uncontended since write has returned.
                 let mut local_state_locked = local_state.lock();
-
                 let result = if let Some(err) = local_state_locked.take_read_stream_error() {
-                    // If there was an error with the stream, then don't retry.
                     RetryResult::Err(err.append("Where read_stream_error was set"))
                 } else {
-                    // On error determine whether it is possible to retry.
                     match result {
                         Err(err) => {
                             if local_state_locked.can_resume() {
@@ -461,53 +452,29 @@ impl GrpcStore {
             .await
             .map(Response::into_inner)
             .err_tip(|| "Action result not found")?;
-        // TODO: Would be better to avoid all the encoding and decoding in this
-        //       file, however there's no way to currently get raw bytes from a
-        //       generated prost request unfortunately.
         let mut value = BytesMut::new();
         action_result
             .encode(&mut value)
             .err_tip(|| "Could not encode upstream action result")?;
 
-        let default_len = value.len() - offset;
-        let length = length.unwrap_or(default_len).min(default_len);
-        if length > 0 {
-            writer
-                .send(value.freeze().slice(offset..offset + length))
-                .await
-                .err_tip(|| "Failed to write data in grpc store")?;
-        }
-        writer
-            .send_eof()
-            .err_tip(|| "Failed to write EOF in grpc store get_action_result_as_part")?;
-        Ok(())
-    }
+        let default
+    }}
 
-    async fn update_action_result_from_bytes(
-        &self,
-        digest: DigestInfo,
-        mut reader: DropCloserReadHalf,
-    ) -> Result<(), Error> {
-        let action_result = ActionResult::decode(reader.consume(None).await?)
-            .err_tip(|| "Failed to decode ActionResult in update_action_result_from_bytes")?;
-        let update_action_request = UpdateActionResultRequest {
-            instance_name: self.instance_name.clone(),
-            action_digest: Some(digest.into()),
-            action_result: Some(action_result),
-            results_cache_policy: None,
-            digest_function: ActiveOriginContext::get_value(&ACTIVE_HASHER_FUNC)
-                .err_tip(|| "In get_action_from_store")?
-                .map_or_else(default_digest_hasher_func, |v| *v)
-                .proto_digest_func()
-                .into(),
-        };
-        self.update_action_result(Request::new(update_action_request))
-            .await
-            .map(|_| ())
-    }
-}
 
-#[async_trait]
+
+
+
+
+
+
+
+
+
+
+
+
+
+    #[async_trait]
 impl StoreDriver for GrpcStore {
     // NOTE: This function can only be safely used on CAS stores. AC stores may return a size that
     // is incorrect.
